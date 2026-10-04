@@ -1,5 +1,8 @@
-from datetime import datetime, time
+import random
+from collections import Counter
+from datetime import datetime, time, timedelta
 from decimal import Decimal
+from pathlib import Path
 
 from src.models import (
     BankAccount,
@@ -281,7 +284,7 @@ def main():
         personal_info="Alexey",
         account_balance=20000,
         currency=Currency.RUB,
-        account_limit=1000,
+        overdraft_limit=Decimal("1000"),
         commission=Decimal("2.00"),
     )
 
@@ -293,10 +296,15 @@ def main():
     print("После withdraw(500) с комиссией:")
     print(premium_account)
 
+    premium_account.withdraw(20000)
+
+    print("После withdraw(20000) в пределах овердрафта:")
+    print(premium_account)
+
     try:
-        premium_account.withdraw(20000)
+        premium_account.withdraw(25000)
     except InsufficientFundsError as e:
-        print(f"Превышение лимита/недостаточно средств: {e}")
+        print(f"Превышение овердрафта: {e}")
 
     section("14. INVESTMENT ACCOUNT")
 
@@ -744,6 +752,11 @@ def main():
         account=sender,
     )
 
+    bank.open_account(
+        client_id=bank_account_client.client_id,
+        account=receiver,
+    )
+
     transaction = Transaction(
         transaction_type=TransactionType.TRANSFER,
         amount=Decimal("1000"),
@@ -983,5 +996,430 @@ def main():
     print(bank.get_total_balance())
 
 
+def describe_result(transaction):
+    if transaction.status == TransactionStatus.COMPLETED:
+        return "ИСПОЛНЕНА"
+
+    reason = transaction.failure_reason or ""
+
+    if reason.startswith("Blocked"):
+        return "ОТКЛОНЕНА (высокий риск)"
+
+    return f"ОШИБКА: {reason}"
+
+
+def run_simulation():
+    section("42. СИМУЛЯЦИЯ РАБОТЫ БАНКА")
+
+    rng = random.Random(42)
+
+    audit_path = Path("data/audit.jsonl")
+    audit_path.parent.mkdir(parents=True, exist_ok=True)
+    audit_path.unlink(missing_ok=True)
+
+    audit_log = AuditLog(file_path=str(audit_path))
+    bank = Bank(audit_log=audit_log)
+
+    processor = TransactionProcessor(
+        bank=bank,
+        external_transfer_commission=Decimal("0.01"),
+        max_retries=3,
+        exchange_rates={
+            (Currency.RUB, Currency.USD): Decimal("0.011"),
+            (Currency.USD, Currency.RUB): Decimal("90"),
+            (Currency.RUB, Currency.EUR): Decimal("0.010"),
+            (Currency.EUR, Currency.RUB): Decimal("100"),
+            (Currency.USD, Currency.EUR): Decimal("0.92"),
+            (Currency.EUR, Currency.USD): Decimal("1.09"),
+        },
+        risk_analyzer=RiskAnalyzer(
+            large_amount_threshold=Decimal("100000"),
+            frequent_operations_threshold=4,
+        ),
+        audit_log=audit_log,
+    )
+
+    print("Клиенты банка:")
+    clients = (
+        ("client-101", "Иван Петров", 34, "pass-101"),
+        ("client-102", "Мария Смирнова", 28, "pass-102"),
+        ("client-103", "Алексей Волков", 41, "pass-103"),
+        ("client-104", "Ольга Кузнецова", 25, "pass-104"),
+        ("client-105", "Дмитрий Соколов", 52, "pass-105"),
+        ("client-106", "Анна Попова", 37, "pass-106"),
+        ("client-107", "Сергей Лебедев", 30, "pass-107"),
+        ("client-108", "Елена Морозова", 45, "pass-108"),
+    )
+
+    for client_id, name, age, password in clients:
+        bank.add_client(
+            Client(
+                client_id=client_id,
+                personal_info=name,
+                status=Status.ACTIVE,
+                accounts=set(),
+                contacts={"email": f"{client_id}@example.com"},
+                age=age,
+                password=password,
+            )
+        )
+        print(f"  {client_id} {name}")
+
+    accounts = [
+        ("client-101", BankAccount(
+            personal_info="Иван Петров",
+            account_balance=150000,
+            currency=Currency.RUB,
+        )),
+        ("client-101", SavingsAccount(
+            personal_info="Иван Петров",
+            account_balance=300000,
+            currency=Currency.RUB,
+            min_balance=10000,
+            monthly_interest_rate=Decimal("0.01"),
+        )),
+        ("client-102", BankAccount(
+            personal_info="Мария Смирнова",
+            account_balance=80000,
+            currency=Currency.RUB,
+        )),
+        ("client-102", BankAccount(
+            personal_info="Мария Смирнова",
+            account_balance=2000,
+            currency=Currency.USD,
+        )),
+        ("client-103", PremiumAccount(
+            personal_info="Алексей Волков",
+            account_balance=50000,
+            currency=Currency.RUB,
+            overdraft_limit=Decimal("20000"),
+            commission=Decimal("2.00"),
+        )),
+        ("client-104", BankAccount(
+            personal_info="Ольга Кузнецова",
+            account_balance=25000,
+            currency=Currency.RUB,
+        )),
+        ("client-104", BankAccount(
+            personal_info="Ольга Кузнецова",
+            account_balance=800,
+            currency=Currency.EUR,
+        )),
+        ("client-105", SavingsAccount(
+            personal_info="Дмитрий Соколов",
+            account_balance=40000,
+            currency=Currency.EUR,
+            min_balance=5000,
+            monthly_interest_rate=Decimal("0.005"),
+        )),
+        ("client-106", PremiumAccount(
+            personal_info="Анна Попова",
+            account_balance=5000,
+            currency=Currency.USD,
+            overdraft_limit=Decimal("500"),
+            commission=Decimal("1.00"),
+        )),
+        ("client-107", BankAccount(
+            personal_info="Сергей Лебедев",
+            account_balance=12000,
+            currency=Currency.RUB,
+        )),
+        ("client-108", BankAccount(
+            personal_info="Елена Морозова",
+            account_balance=60000,
+            currency=Currency.RUB,
+        )),
+        ("client-108", InvestmentAccount(
+            personal_info="Елена Морозова",
+            account_balance=100000,
+            currency=Currency.RUB,
+        )),
+    ]
+
+    for client_id, account in accounts:
+        bank.open_account(client_id=client_id, account=account)
+
+    investment_account = accounts[-1][1]
+    investment_account.deposit(AssetType.STOCKS, Decimal("30000"))
+    investment_account.deposit(AssetType.BONDS, Decimal("20000"))
+
+    new_account = BankAccount(
+        personal_info="Мария Смирнова",
+        account_balance=0,
+        currency=Currency.RUB,
+    )
+    bank.open_account(client_id="client-102", account=new_account)
+
+    print(f"\nСчетов открыто: {len(accounts)}")
+
+    for _ in range(3):
+        try:
+            bank.authenticate_client("client-106", "wrong-password")
+        except InvalidOperationError:
+            pass
+
+    print(
+        "Клиент client-106 заблокирован после 3 неверных паролей: "
+        f"{bank.clients['client-106'].is_blocked}"
+    )
+
+    section("43. ГЕНЕРАЦИЯ ТРАНЗАКЦИЙ И ОЧЕРЕДЬ")
+
+    usable = [
+        account for _, account in accounts
+        if not isinstance(account, InvestmentAccount)
+    ]
+
+    transactions = []
+
+    for _ in range(40):
+        kind = rng.choices(
+            [
+                TransactionType.TRANSFER,
+                TransactionType.DEPOSIT,
+                TransactionType.WITHDRAW,
+            ],
+            weights=[6, 2, 2],
+        )[0]
+
+        source = rng.choice(usable)
+        target = rng.choice(
+            [account for account in usable if account is not source]
+        )
+
+        amount = Decimal(rng.randint(100, 20000))
+
+        if rng.random() < 0.1:
+            amount = Decimal(rng.randint(150000, 400000))
+
+        if kind == TransactionType.TRANSFER:
+            transaction = Transaction(
+                transaction_type=kind,
+                amount=amount,
+                currency=source.currency,
+                sender=source.account_id,
+                receiver=target.account_id,
+                is_external=rng.random() < 0.3,
+            )
+
+        elif kind == TransactionType.DEPOSIT:
+            transaction = Transaction(
+                transaction_type=kind,
+                amount=amount,
+                currency=target.currency,
+                receiver=target.account_id,
+            )
+
+        else:
+            transaction = Transaction(
+                transaction_type=kind,
+                amount=amount,
+                currency=source.currency,
+                sender=source.account_id,
+            )
+
+        transactions.append(transaction)
+
+    bank.freeze_account(
+        client_id="client-107",
+        account_id=accounts[9][1].account_id,
+        password="pass-107",
+    )
+
+    bank.close_account(
+        client_id="client-104",
+        account_id=accounts[6][1].account_id,
+        password="pass-104",
+    )
+
+    print("Счёт client-107 заморожен, счёт client-104 (EUR) закрыт.\n")
+
+    queue = TransactionQueue()
+    now = datetime.now()
+
+    for transaction in transactions:
+        priority = rng.choice([0, 1, 5, 10])
+        delayed = rng.random() < 0.15
+        execute_at = now + timedelta(hours=2) if delayed else None
+
+        queue.add(
+            transaction,
+            priority=priority,
+            execute_at=execute_at,
+        )
+
+        note = f", отложена до {execute_at:%H:%M}" if delayed else ""
+
+        print(
+            f"  В очередь: {transaction.transaction_id} "
+            f"{transaction.transaction_type.value} "
+            f"{transaction.amount} {transaction.currency.value} "
+            f"priority={priority}{note}"
+        )
+
+    cancelled_transaction = transactions[-1]
+    queue.cancel(cancelled_transaction.transaction_id)
+
+    print(f"\nОтменена в очереди: {cancelled_transaction.transaction_id}")
+
+    suspicious_transfer = Transaction(
+        transaction_type=TransactionType.TRANSFER,
+        amount=Decimal("250000"),
+        currency=Currency.RUB,
+        sender=accounts[0][1].account_id,
+        receiver=new_account.account_id,
+    )
+    transactions.append(suspicious_transfer)
+    queue.add(suspicious_transfer, priority=0)
+
+    print(
+        f"  В очередь (крупный перевод на новый счёт): "
+        f"{suspicious_transfer.transaction_id} "
+        f"{suspicious_transfer.amount} {suspicious_transfer.currency.value}"
+    )
+
+    section("44. ИСПОЛНЕНИЕ ОЧЕРЕДИ")
+
+    processed = processor.process_queue(queue)
+
+    for transaction in processed:
+        print(
+            f"  {transaction.transaction_id} "
+            f"{transaction.transaction_type.value:8} "
+            f"{transaction.amount:>10} {transaction.currency.value}: "
+            f"{describe_result(transaction)}"
+        )
+
+    print(f"\nОсталось в очереди (отложенные): {len(queue)}")
+
+    section("45. ПОЛЬЗОВАТЕЛЬСКИЕ СЦЕНАРИИ")
+
+    client_id = "client-101"
+    user_accounts = bank.search_accounts(client_id=client_id)
+
+    print(f"Счета клиента {client_id}:")
+    for account in user_accounts:
+        print(account)
+
+    user_account_ids = {account.account_id for account in user_accounts}
+
+    history = [
+        transaction
+        for transaction in transactions
+        if (
+                transaction.sender in user_account_ids
+                or transaction.receiver in user_account_ids
+        )
+    ]
+
+    print(f"\nИстория операций клиента {client_id}: {len(history)}")
+    for transaction in history:
+        print(
+            f"  {transaction.transaction_id} "
+            f"{transaction.transaction_type.value} "
+            f"{transaction.amount} {transaction.currency.value} "
+            f"-> {transaction.status.value}"
+        )
+
+    suspicious = [
+        transaction
+        for transaction in transactions
+        if transaction.risk_level in (RiskLevel.MEDIUM, RiskLevel.HIGH)
+    ]
+
+    print(f"\nПодозрительные операции (MEDIUM/HIGH): {len(suspicious)}")
+    for transaction in suspicious:
+        print(
+            f"  {transaction.transaction_id} "
+            f"risk={transaction.risk_level.value} "
+            f"status={transaction.status.value}"
+        )
+
+    section("46. БАНК: БЛОКИРОВКА ОПАСНЫХ ОПЕРАЦИЙ")
+
+    owner_id = "client-103"
+    owner_password = "pass-103"
+    owner_account = accounts[4][1]
+
+    for _ in range(5):
+        bank.deposit(
+            client_id=owner_id,
+            account_id=owner_account.account_id,
+            password=owner_password,
+            amount=100,
+        )
+
+    fresh_account = BankAccount(
+        personal_info="Алексей Волков",
+        account_balance=0,
+        currency=Currency.RUB,
+    )
+    bank.open_account(client_id=owner_id, account=fresh_account)
+
+    print("Пять небольших пополнений выполнены.")
+
+    try:
+        bank.deposit(
+            client_id=owner_id,
+            account_id=fresh_account.account_id,
+            password=owner_password,
+            amount=1500000,
+        )
+        print("Крупное пополнение нового счёта исполнено.")
+    except InvalidOperationError as error:
+        print(f"Крупное пополнение нового счёта заблокировано банком: {error}")
+
+    print(f"Баланс нового счёта: {fresh_account.balance}")
+    print(f"Операций в истории банка: {len(bank.history)}")
+
+    section("47. ОТЧЁТЫ")
+
+    report_builder = ReportBuilder(
+        bank=bank,
+        transactions=transactions,
+        risk_analyzer=processor.risk_analyzer,
+    )
+
+    print("Топ-3 клиента по балансу:")
+    for index, ranked in enumerate(
+            bank.get_clients_ranking()[:3],
+            start=1
+    ):
+        print(f"  {index}. {ranked.client_id} - {ranked.personal_info}")
+
+    print("\nСтатистика транзакций:")
+    print(report_builder.transaction_statistics())
+
+    print("\nОшибки исполнения:")
+    reasons = Counter(
+        transaction.failure_reason
+        for transaction in transactions
+        if transaction.status == TransactionStatus.FAILED
+    )
+    for reason, count in reasons.most_common():
+        print(f"  {count} x {reason}")
+
+    print("\nСобытия аудита по уровням:")
+    print(Counter(log["level"] for log in audit_log.get_all()))
+
+    print(
+        "\nОбщий баланс банка (суммы без конвертации валют): "
+        f"{bank.get_total_balance()}"
+    )
+
+    report_builder.export_to_json(
+        report_builder.bank_report(),
+        "reports/simulation_bank_report.json",
+    )
+    report_builder.export_to_csv(
+        report_builder.transaction_statistics(),
+        "reports/simulation_transactions.csv",
+    )
+    report_builder.save_charts("reports/charts")
+
+    print("\nОтчёты и графики сохранены в reports/.")
+
+
 if __name__ == "__main__":
     main()
+    run_simulation()

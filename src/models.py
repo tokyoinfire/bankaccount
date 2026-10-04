@@ -81,6 +81,10 @@ class InsufficientFundsError(Exception):
     pass
 
 
+def _to_money(value) -> Decimal:
+    return Decimal(str(value))
+
+
 class AbstractAccount(ABC):
 
     def __init__(
@@ -93,7 +97,7 @@ class AbstractAccount(ABC):
     ):
         self.account_id = account_id
         self.personal_info = personal_info
-        self._account_balance = account_balance
+        self._account_balance = _to_money(account_balance)
         self.account_status = account_status
         self.account_type = account_type
 
@@ -129,6 +133,8 @@ class AbstractAccount(ABC):
                 "Amount must be greater than zero"
             )
 
+        return _to_money(amount)
+
 
 class BankAccount(AbstractAccount):
 
@@ -152,7 +158,7 @@ class BankAccount(AbstractAccount):
                 "Invalid personal information"
             )
 
-        if not isinstance(account_balance, (int, float)):
+        if not isinstance(account_balance, (int, float, Decimal)):
             raise InvalidOperationError(
                 "Account balance must be a number"
             )
@@ -189,13 +195,13 @@ class BankAccount(AbstractAccount):
 
     def deposit(self, amount):
         self._check_operation_allowed()
-        self._validate_amount(amount)
+        amount = self._validate_amount(amount)
 
         self._account_balance += amount
 
     def withdraw(self, amount):
         self._check_operation_allowed()
-        self._validate_amount(amount)
+        amount = self._validate_amount(amount)
 
         if self._account_balance < amount:
             raise InsufficientFundsError(
@@ -250,7 +256,7 @@ class SavingsAccount(AbstractAccount):
                 "Invalid personal information"
             )
 
-        if not isinstance(account_balance, (int, float)):
+        if not isinstance(account_balance, (int, float, Decimal)):
             raise InvalidOperationError(
                 "Account balance must be a number"
             )
@@ -260,7 +266,7 @@ class SavingsAccount(AbstractAccount):
                 "Account balance cannot be negative"
             )
 
-        if not isinstance(min_balance, (int, float)):
+        if not isinstance(min_balance, (int, float, Decimal)):
             raise InvalidOperationError(
                 "Minimum balance must be a number"
             )
@@ -304,18 +310,18 @@ class SavingsAccount(AbstractAccount):
         )
 
         self.currency = currency
-        self.min_balance = min_balance
-        self.monthly_interest_rate = monthly_interest_rate
+        self.min_balance = _to_money(min_balance)
+        self.monthly_interest_rate = _to_money(monthly_interest_rate)
 
     def deposit(self, amount):
         self._check_operation_allowed()
-        self._validate_amount(amount)
+        amount = self._validate_amount(amount)
 
         self._account_balance += amount
 
     def withdraw(self, amount):
         self._check_operation_allowed()
-        self._validate_amount(amount)
+        amount = self._validate_amount(amount)
 
         if self._account_balance < amount:
             raise InsufficientFundsError(
@@ -335,7 +341,7 @@ class SavingsAccount(AbstractAccount):
         interest = (
                 self._account_balance
                 * self.monthly_interest_rate
-        )
+        ).quantize(Decimal("0.01"))
 
         self._account_balance += interest
 
@@ -366,7 +372,7 @@ class PremiumAccount(AbstractAccount):
     def __init__(
             self,
             personal_info,
-            account_limit,
+            overdraft_limit=Decimal("0.00"),
             commission=Decimal("2.00"),
             account_type=AccountType.PREMIUM,
             account_balance=0,
@@ -385,7 +391,7 @@ class PremiumAccount(AbstractAccount):
                 "Invalid personal information"
             )
 
-        if not isinstance(account_balance, (int, float)):
+        if not isinstance(account_balance, (int, float, Decimal)):
             raise InvalidOperationError(
                 "Account balance must be a number"
             )
@@ -395,14 +401,14 @@ class PremiumAccount(AbstractAccount):
                 "Account balance cannot be negative"
             )
 
-        if not isinstance(account_limit, (int, float)):
+        if not isinstance(overdraft_limit, (int, float, Decimal)):
             raise InvalidOperationError(
-                "Account limit must be a number"
+                "Overdraft limit must be a number"
             )
 
-        if account_limit < 0:
+        if overdraft_limit < 0:
             raise InvalidOperationError(
-                "Account limit cannot be negative"
+                "Overdraft limit cannot be negative"
             )
 
         if not isinstance(commission, Decimal):
@@ -439,24 +445,22 @@ class PremiumAccount(AbstractAccount):
         )
 
         self.currency = currency
-        self.account_limit = account_limit
+        self.overdraft_limit = _to_money(overdraft_limit)
         self.commission = commission
 
     def deposit(self, amount):
         self._check_operation_allowed()
-        self._validate_amount(amount)
+        amount = self._validate_amount(amount)
 
         self._account_balance += amount
 
     def withdraw(self, amount):
         self._check_operation_allowed()
-        self._validate_amount(amount)
+        amount = self._validate_amount(amount)
 
-        total_amount = float(
-            Decimal(str(amount)) + self.commission
-        )
+        total_amount = amount + self.commission
 
-        if self._account_balance - total_amount < self.account_limit:
+        if self._account_balance - total_amount < -self.overdraft_limit:
             raise InsufficientFundsError(
                 "Insufficient funds"
             )
@@ -471,7 +475,7 @@ class PremiumAccount(AbstractAccount):
             "status": self.account_status.value,
             "currency": self.currency.value,
             "account_type": self.account_type.value,
-            "account_limit": self.account_limit,
+            "overdraft_limit": self.overdraft_limit,
             "commission": self.commission
         }
 
@@ -509,7 +513,7 @@ class InvestmentAccount(AbstractAccount):
                 "Invalid personal information"
             )
 
-        if not isinstance(account_balance, (int, float)):
+        if not isinstance(account_balance, (int, float, Decimal)):
             raise InvalidOperationError(
                 "Account balance must be a number"
             )
@@ -827,12 +831,42 @@ class Client:
         )
 
 
+def assess_risk(
+        risk_analyzer,
+        transaction,
+        history,
+        involved_ids: set,
+        new_account: bool
+):
+    related = [
+        past
+        for past in history
+        if past.sender in involved_ids or past.receiver in involved_ids
+    ]
+
+    return risk_analyzer.analyze(
+        transaction,
+        related,
+        new_account=new_account
+    )
+
+
 class Bank:
 
-    def __init__(self):
+    def __init__(
+            self,
+            risk_analyzer: "RiskAnalyzer | None" = None,
+            audit_log: "AuditLog | None" = None
+    ):
         self.clients: dict[str, Client] = {}
         self.accounts: dict[str, AbstractAccount] = {}
         self.suspicious_actions: list[dict] = []
+        self.risk_analyzer = (
+            risk_analyzer if risk_analyzer is not None
+            else RiskAnalyzer()
+        )
+        self.audit_log = audit_log
+        self.history = []
 
     def add_client(self, client: Client):
         if not isinstance(client, Client):
@@ -974,7 +1008,13 @@ class Bank:
             password
         )
 
-        account.deposit(amount)
+        self._guarded_operation(
+            client_id,
+            account,
+            TransactionType.DEPOSIT,
+            amount,
+            account.deposit
+        )
 
     def withdraw(
             self,
@@ -991,7 +1031,120 @@ class Bank:
             password
         )
 
-        account.withdraw(amount)
+        self._guarded_operation(
+            client_id,
+            account,
+            TransactionType.WITHDRAW,
+            amount,
+            account.withdraw
+        )
+
+    def _guarded_operation(
+            self,
+            client_id: str,
+            account,
+            transaction_type: TransactionType,
+            amount,
+            operation
+    ):
+        if not isinstance(amount, (int, float, Decimal)):
+            raise InvalidOperationError(
+                "Amount must be a number"
+            )
+
+        is_deposit = transaction_type == TransactionType.DEPOSIT
+
+        transaction = Transaction(
+            transaction_type=transaction_type,
+            amount=_to_money(amount),
+            currency=account.currency,
+            sender=None if is_deposit else account.account_id,
+            receiver=account.account_id if is_deposit else None,
+        )
+
+        client = self._get_client(client_id)
+
+        account_is_new = not any(
+            past.status == TransactionStatus.COMPLETED
+            and account.account_id in (past.sender, past.receiver)
+            for past in self.history
+        )
+
+        risk = assess_risk(
+            self.risk_analyzer,
+            transaction,
+            self.history,
+            set(client.accounts) | {account.account_id},
+            account_is_new
+        )
+
+        transaction.risk_level = risk["risk_level"]
+        self.history.append(transaction)
+
+        if self.risk_analyzer.is_dangerous(risk):
+            transaction.mark_failed("Blocked: high risk")
+
+            self._record(
+                client_id,
+                transaction,
+                AuditLevel.CRITICAL,
+                "OPERATION_BLOCKED",
+                ", ".join(risk["reasons"])
+            )
+
+            raise InvalidOperationError(
+                "Operation blocked: high risk"
+            )
+
+        try:
+            operation(amount)
+
+        except Exception as error:
+            transaction.mark_failed(str(error))
+
+            self._record(
+                client_id,
+                transaction,
+                AuditLevel.ERROR,
+                "OPERATION_FAILED",
+                str(error)
+            )
+
+            raise
+
+        transaction.mark_completed()
+
+        if is_deposit:
+            transaction.credited_amount = transaction.amount
+        else:
+            transaction.debited_amount = transaction.amount
+
+        self._record(
+            client_id,
+            transaction,
+            AuditLevel.INFO,
+            "OPERATION_COMPLETED",
+            transaction_type.value
+        )
+
+    def _record(
+            self,
+            client_id: str,
+            transaction: Transaction,
+            level: AuditLevel,
+            action: str,
+            message: str
+    ):
+        if self.audit_log is None:
+            return
+
+        self.audit_log.log(
+            level=level,
+            action=action,
+            message=message,
+            client_id=client_id,
+            transaction_id=transaction.transaction_id
+        )
 
     def get_total_balance(self):
         total = Decimal("0.00")
@@ -1089,7 +1242,8 @@ class Transaction:
             currency: Currency,
             sender: str | None = None,
             receiver: str | None = None,
-            commission: Decimal = Decimal("0.00")
+            commission: Decimal = Decimal("0.00"),
+            is_external: bool = False
     ):
         if not isinstance(transaction_type, TransactionType):
             raise InvalidOperationError(
@@ -1126,6 +1280,11 @@ class Transaction:
         self.created_at = datetime.now()
         self.processed_at = None
 
+        self.is_external = is_external
+        self.debited_amount = None
+        self.credited_amount = None
+        self.risk_level = None
+
     def mark_processing(self):
         self.status = TransactionStatus.PROCESSING
 
@@ -1161,7 +1320,8 @@ class Transaction:
 class TransactionQueue:
 
     def __init__(self):
-        self._queue = []
+        self._ready = []
+        self._delayed = []
         self._counter = 0
 
     def add(
@@ -1175,56 +1335,70 @@ class TransactionQueue:
                 "Invalid transaction"
             )
 
-        if execute_at is None:
-            execute_at = datetime.now()
+        if not isinstance(priority, int) or isinstance(priority, bool):
+            raise InvalidOperationError(
+                "Priority must be an integer"
+            )
 
         self._counter += 1
 
-        heapq.heappush(
-            self._queue,
-            (
-                execute_at,
-                priority,
-                self._counter,
-                transaction
+        if execute_at is None or execute_at <= datetime.now():
+            heapq.heappush(
+                self._ready,
+                (-priority, self._counter, transaction)
             )
-        )
+        else:
+            heapq.heappush(
+                self._delayed,
+                (execute_at, self._counter, priority, transaction)
+            )
 
     def pop(self):
-        if not self._queue:
+        self._release_due()
+
+        if not self._ready:
             return None
 
-        execute_at, _, _, transaction = self._queue[0]
-
-        if execute_at > datetime.now():
-            return None
-
-        heapq.heappop(self._queue)
+        _, _, transaction = heapq.heappop(self._ready)
 
         return transaction
 
     def cancel(self, transaction_id: str):
-        for index, item in enumerate(self._queue):
+        for heap in (self._ready, self._delayed):
+            for index, item in enumerate(heap):
 
-            transaction = item[3]
+                transaction = item[-1]
 
-            if transaction.transaction_id == transaction_id:
-                transaction.cancel()
+                if transaction.transaction_id == transaction_id:
+                    transaction.cancel()
 
-                self._queue.pop(index)
-                heapq.heapify(self._queue)
+                    heap.pop(index)
+                    heapq.heapify(heap)
 
-                return
+                    return
 
         raise InvalidOperationError(
             "Transaction not found"
         )
 
+    def _release_due(self):
+        now = datetime.now()
+
+        while self._delayed and self._delayed[0][0] <= now:
+            _, counter, priority, transaction = heapq.heappop(
+                self._delayed
+            )
+
+            heapq.heappush(
+                self._ready,
+                (-priority, counter, transaction)
+            )
+
     def __len__(self):
-        return len(self._queue)
+        return len(self._ready) + len(self._delayed)
 
     def is_empty(self):
-        return len(self._queue) == 0
+        return len(self) == 0
 
 
 class TransactionProcessor:
@@ -1233,7 +1407,10 @@ class TransactionProcessor:
             self,
             bank: Bank,
             external_transfer_commission: Decimal = Decimal("0.01"),
-            max_retries: int = 3
+            max_retries: int = 3,
+            exchange_rates: dict | None = None,
+            risk_analyzer: "RiskAnalyzer | None" = None,
+            audit_log: "AuditLog | None" = None
     ):
         if not isinstance(
                 external_transfer_commission,
@@ -1258,16 +1435,27 @@ class TransactionProcessor:
             external_transfer_commission
         )
         self.max_retries = max_retries
+        self.exchange_rates = (
+            exchange_rates if exchange_rates is not None else {}
+        )
+        self.risk_analyzer = (
+            risk_analyzer if risk_analyzer is not None
+            else RiskAnalyzer()
+        )
+        self.audit_log = audit_log
 
         self.errors = []
+        self.history = []
 
     def calculate_commission(
             self,
-            transaction: Transaction,
-            external: bool = False
+            transaction: Transaction
     ) -> Decimal:
 
-        if not external:
+        if (
+                transaction.transaction_type != TransactionType.TRANSFER
+                or not transaction.is_external
+        ):
             return Decimal("0.00")
 
         return (
@@ -1306,8 +1494,7 @@ class TransactionProcessor:
 
     def process(
             self,
-            transaction: Transaction,
-            external: bool = False
+            transaction: Transaction
     ):
         if transaction.status != TransactionStatus.PENDING:
             raise InvalidOperationError(
@@ -1316,102 +1503,25 @@ class TransactionProcessor:
 
         transaction.mark_processing()
 
-        for attempt in range(1, self.max_retries + 1):
+        risk = self._assess_risk(transaction)
+        transaction.risk_level = risk["risk_level"]
 
-            try:
-                commission = self.calculate_commission(
-                    transaction,
-                    external
-                )
+        if self.risk_analyzer.is_dangerous(risk):
+            transaction.mark_failed(
+                "Blocked: high risk"
+            )
 
-                transaction.commission = commission
+            self._audit(
+                AuditLevel.CRITICAL,
+                "TRANSACTION_BLOCKED",
+                ", ".join(risk["reasons"]),
+                transaction
+            )
 
-                sender = self.bank.accounts.get(
-                    transaction.sender
-                )
+        else:
+            self._run_with_retries(transaction)
 
-                receiver = self.bank.accounts.get(
-                    transaction.receiver
-                )
-
-                if sender is None:
-                    raise InvalidOperationError(
-                        "Sender account not found"
-                    )
-
-                if receiver is None:
-                    raise InvalidOperationError(
-                        "Receiver account not found"
-                    )
-
-                if sender.account_status == Status.FROZEN:
-                    raise AccountFrozenError(
-                        "Sender account is frozen"
-                    )
-
-                if receiver.account_status == Status.FROZEN:
-                    raise AccountFrozenError(
-                        "Receiver account is frozen"
-                    )
-
-                if sender.account_status == Status.CLOSED:
-                    raise AccountClosedError(
-                        "Sender account is closed"
-                    )
-
-                if receiver.account_status == Status.CLOSED:
-                    raise AccountClosedError(
-                        "Receiver account is closed"
-                    )
-
-                total_amount = (
-                        transaction.amount + commission
-                )
-
-                sender_balance = Decimal(
-                    str(sender.balance)
-                )
-
-                if isinstance(sender, PremiumAccount):
-                    minimum_balance = Decimal(
-                        str(sender.account_limit)
-                    )
-                else:
-                    minimum_balance = Decimal("0.00")
-
-                if (
-                        sender_balance - total_amount
-                        < minimum_balance
-                ):
-                    raise InsufficientFundsError(
-                        "Insufficient funds"
-                    )
-
-                sender._account_balance -= float(
-                    total_amount
-                )
-
-                receiver._account_balance += float(
-                    transaction.amount
-                )
-
-                transaction.mark_completed()
-
-                return transaction
-
-            except Exception as error:
-
-                self.errors.append({
-                    "transaction_id":
-                        transaction.transaction_id,
-                    "attempt": attempt,
-                    "error": str(error)
-                })
-
-                if attempt == self.max_retries:
-                    transaction.mark_failed(
-                        str(error)
-                    )
+        self.history.append(transaction)
 
         return transaction
 
@@ -1433,6 +1543,209 @@ class TransactionProcessor:
             )
 
         return processed
+
+    def _run_with_retries(
+            self,
+            transaction: Transaction
+    ):
+        for attempt in range(1, self.max_retries + 1):
+
+            try:
+                self._execute(transaction)
+
+            except Exception as error:
+
+                self.errors.append({
+                    "transaction_id":
+                        transaction.transaction_id,
+                    "attempt": attempt,
+                    "error": str(error)
+                })
+
+                if attempt == self.max_retries:
+                    transaction.mark_failed(
+                        str(error)
+                    )
+
+                    self._audit(
+                        AuditLevel.ERROR,
+                        "TRANSACTION_FAILED",
+                        str(error),
+                        transaction
+                    )
+
+            else:
+                transaction.mark_completed()
+
+                self._audit(
+                    AuditLevel.INFO,
+                    "TRANSACTION_COMPLETED",
+                    transaction.transaction_type.value,
+                    transaction
+                )
+
+                return
+
+    def _execute(
+            self,
+            transaction: Transaction
+    ):
+        sender, receiver = self._resolve_accounts(transaction)
+        commission = self.calculate_commission(transaction)
+
+        debit = None
+        credit = None
+
+        if sender is not None:
+            debit = self.convert_currency(
+                transaction.amount + commission,
+                transaction.currency,
+                sender.currency,
+                self.exchange_rates
+            )
+
+        if receiver is not None:
+            credit = self.convert_currency(
+                transaction.amount,
+                transaction.currency,
+                receiver.currency,
+                self.exchange_rates
+            )
+
+            receiver._check_operation_allowed()
+
+            if credit <= 0:
+                raise InvalidOperationError(
+                    "Converted amount is too small"
+                )
+
+        if sender is not None:
+            sender.withdraw(debit)
+
+        if receiver is not None:
+            receiver.deposit(credit)
+
+        transaction.commission = commission
+        transaction.debited_amount = debit
+        transaction.credited_amount = credit
+
+    def _resolve_accounts(
+            self,
+            transaction: Transaction
+    ):
+        if transaction.transaction_type == TransactionType.DEPOSIT:
+
+            if transaction.sender is not None:
+                raise InvalidOperationError(
+                    "Deposit must not have a sender"
+                )
+
+            return None, self._find_account(
+                transaction.receiver,
+                "Receiver"
+            )
+
+        if transaction.transaction_type == TransactionType.WITHDRAW:
+
+            if transaction.receiver is not None:
+                raise InvalidOperationError(
+                    "Withdraw must not have a receiver"
+                )
+
+            return self._find_account(
+                transaction.sender,
+                "Sender"
+            ), None
+
+        return (
+            self._find_account(transaction.sender, "Sender"),
+            self._find_account(transaction.receiver, "Receiver"),
+        )
+
+    def _find_account(
+            self,
+            account_id: str | None,
+            role: str
+    ):
+        account = self.bank.accounts.get(account_id)
+
+        if account is None:
+            raise InvalidOperationError(
+                f"{role} account not found"
+            )
+
+        if isinstance(account, InvestmentAccount):
+            raise InvalidOperationError(
+                "Investment accounts do not support transactions"
+            )
+
+        return account
+
+    def _assess_risk(
+            self,
+            transaction: Transaction
+    ):
+        involved = {
+            account_id
+            for account_id in (
+                transaction.sender,
+                transaction.receiver
+            )
+            if account_id is not None
+        }
+
+        receiver_is_new = (
+                transaction.transaction_type == TransactionType.TRANSFER
+                and not any(
+                    past.status == TransactionStatus.COMPLETED
+                    and past.receiver == transaction.receiver
+                    for past in self.history
+                )
+        )
+
+        return assess_risk(
+            self.risk_analyzer,
+            transaction,
+            self.history,
+            involved,
+            receiver_is_new
+        )
+
+    def _client_id_for(
+            self,
+            account_id: str | None
+    ):
+        if account_id is None:
+            return None
+
+        for client in self.bank.clients.values():
+            if account_id in client.accounts:
+                return client.client_id
+
+        return None
+
+    def _audit(
+            self,
+            level: AuditLevel,
+            action: str,
+            message: str,
+            transaction: Transaction
+    ):
+        if self.audit_log is None:
+            return
+
+        client_id = (
+                self._client_id_for(transaction.sender)
+                or self._client_id_for(transaction.receiver)
+        )
+
+        self.audit_log.log(
+            level=level,
+            action=action,
+            message=message,
+            client_id=client_id,
+            transaction_id=transaction.transaction_id
+        )
 
 
 class AuditLog:
@@ -1802,7 +2115,7 @@ class ReportBuilder:
 
         self._save_client_balance_chart(directory)
         self._save_transaction_status_chart(directory)
-        self._save_transaction_flow_chart(directory)
+        self._save_balance_movement_charts(directory)
 
     def _save_transaction_status_chart(
             self,
@@ -1904,40 +2217,75 @@ class ReportBuilder:
 
         plt.close()
 
-    def _save_transaction_flow_chart(
+    def _save_balance_movement_charts(
             self,
             directory
     ):
-        history = []
-        balance = Decimal("0.00")
+        for account_id, account in self.bank.accounts.items():
 
-        for transaction in self.transactions:
+            balance_change = Decimal("0.00")
+            points = []
 
-            if transaction.status != TransactionStatus.COMPLETED:
+            for transaction in self.transactions:
+
+                if transaction.status != TransactionStatus.COMPLETED:
+                    continue
+
+                change = self._balance_change(
+                    transaction,
+                    account_id
+                )
+
+                if change == 0:
+                    continue
+
+                balance_change += change
+                points.append(float(balance_change))
+
+            if not points:
                 continue
 
-            balance += transaction.amount
-            history.append(float(balance))
+            plt.figure()
 
-        if not history:
-            return
+            plt.plot(
+                range(1, len(points) + 1),
+                points,
+                marker="o"
+            )
 
-        plt.figure()
+            plt.title(
+                f"Balance movement: {account_id} "
+                f"({account.currency.value})"
+            )
+            plt.xlabel("Operation")
+            plt.ylabel("Cumulative change")
 
-        plt.plot(
-            range(1, len(history) + 1),
-            history
-        )
+            plt.savefig(
+                f"{directory}/balance_movement_{account_id}.png"
+            )
 
-        plt.title("Transaction Flow")
-        plt.xlabel("Transaction")
-        plt.ylabel("Amount")
+            plt.close()
 
-        plt.savefig(
-            f"{directory}/transaction_flow.png"
-        )
+    @staticmethod
+    def _balance_change(
+            transaction: Transaction,
+            account_id: str
+    ) -> Decimal:
+        change = Decimal("0.00")
 
-        plt.close()
+        if (
+                transaction.sender == account_id
+                and transaction.debited_amount is not None
+        ):
+            change -= transaction.debited_amount
+
+        if (
+                transaction.receiver == account_id
+                and transaction.credited_amount is not None
+        ):
+            change += transaction.credited_amount
+
+        return change
 
     @staticmethod
     def _transaction_to_dict(
