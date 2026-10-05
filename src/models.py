@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import csv
 import heapq
 import json
@@ -831,6 +833,17 @@ class Client:
         )
 
 
+def check_operation_time(moment: datetime | None = None):
+    if moment is None:
+        moment = datetime.now()
+
+    if 0 <= moment.hour < 5:
+        raise InvalidOperationError(
+            "Operations are unavailable "
+            "from 00:00 to 05:00"
+        )
+
+
 def assess_risk(
         risk_analyzer,
         transaction,
@@ -1078,6 +1091,7 @@ class Bank:
             account_is_new
         )
 
+        transaction.risk = risk
         transaction.risk_level = risk["risk_level"]
         self.history.append(transaction)
 
@@ -1224,13 +1238,7 @@ class Bank:
         return account
 
     def _check_operation_time(self):
-        current_hour = datetime.now().hour
-
-        if 0 <= current_hour < 5:
-            raise InvalidOperationError(
-                "Operations are unavailable "
-                "from 00:00 to 05:00"
-            )
+        check_operation_time()
 
 
 class Transaction:
@@ -1283,6 +1291,7 @@ class Transaction:
         self.is_external = is_external
         self.debited_amount = None
         self.credited_amount = None
+        self.risk = None
         self.risk_level = None
 
     def mark_processing(self):
@@ -1504,7 +1513,34 @@ class TransactionProcessor:
         transaction.mark_processing()
 
         risk = self._assess_risk(transaction)
+        transaction.risk = risk
         transaction.risk_level = risk["risk_level"]
+
+        try:
+
+            check_operation_time(transaction.created_at)
+            check_operation_time()
+
+        except InvalidOperationError as error:
+            transaction.mark_failed(str(error))
+
+            self.errors.append({
+                "transaction_id":
+                    transaction.transaction_id,
+                "attempt": 0,
+                "error": str(error)
+            })
+
+            self._audit(
+                AuditLevel.WARNING,
+                "TRANSACTION_BLOCKED",
+                str(error),
+                transaction
+            )
+
+            self.history.append(transaction)
+
+            return transaction
 
         if self.risk_analyzer.is_dangerous(risk):
             transaction.mark_failed(
@@ -1889,6 +1925,58 @@ class RiskAnalyzer:
                 == RiskLevel.HIGH
         )
 
+    def analyze_history(
+            self,
+            transactions: list[Transaction],
+            scope_ids: set[str] | None = None
+    ):
+
+        order = sorted(
+            range(len(transactions)),
+            key=lambda index: transactions[index].created_at
+        )
+
+        results = [None] * len(transactions)
+        earlier = []
+
+        for index in order:
+            transaction = transactions[index]
+
+            if transaction.risk is not None:
+                results[index] = transaction.risk
+
+            else:
+                involved = (
+                    scope_ids if scope_ids is not None
+                    else {transaction.sender, transaction.receiver} - {None}
+                )
+
+                related = [
+                    past
+                    for past in earlier
+                    if past.sender in involved or past.receiver in involved
+                ]
+
+                new_account = (
+                        transaction.transaction_type
+                        == TransactionType.TRANSFER
+                        and not any(
+                            past.status == TransactionStatus.COMPLETED
+                            and past.receiver == transaction.receiver
+                            for past in earlier
+                        )
+                )
+
+                results[index] = self.analyze(
+                    transaction,
+                    related,
+                    new_account=new_account
+                )
+
+            earlier.append(transaction)
+
+        return results
+
     def analyze_client(
             self,
             client_id: str,
@@ -1908,12 +1996,10 @@ class RiskAnalyzer:
         medium_risk = 0
         low_risk = 0
 
-        for transaction in client_transactions:
-
-            result = self.analyze(
-                transaction,
-                client_transactions
-            )
+        for result in self.analyze_history(
+                client_transactions,
+                client_account_ids
+        ):
 
             if result["risk_level"] == RiskLevel.HIGH:
                 high_risk += 1
@@ -2010,17 +2096,9 @@ class ReportBuilder:
         }
 
     def risk_report(self):
-        results = []
-
-        for transaction in self.transactions:
-            result = self.risk_analyzer.analyze(
-                transaction,
-                self.transactions
-            )
-
-            results.append(result)
-
-        return results
+        return self.risk_analyzer.analyze_history(
+            self.transactions
+        )
 
     def transaction_statistics(self):
         statistics = {
