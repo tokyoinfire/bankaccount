@@ -319,17 +319,17 @@ def main():
 
     print("\nПополняем портфель:")
 
-    investment_account.deposit(
+    investment_account.buy_asset(
         AssetType.STOCKS,
         Decimal("30000"),
     )
 
-    investment_account.deposit(
+    investment_account.buy_asset(
         AssetType.BONDS,
         Decimal("20000"),
     )
 
-    investment_account.deposit(
+    investment_account.buy_asset(
         AssetType.ETF,
         Decimal("10000"),
     )
@@ -341,10 +341,17 @@ def main():
 
     print("\nВыводим 5000 из STOCKS:")
 
-    investment_account.withdraw(
+    investment_account.sell_asset(
         AssetType.STOCKS,
         Decimal("5000"),
     )
+
+    print(investment_account)
+
+    print("\nОбычное пополнение и снятие свободных средств:")
+
+    investment_account.deposit(15000)
+    investment_account.withdraw(Decimal("2500"))
 
     print(investment_account)
 
@@ -365,7 +372,7 @@ def main():
     print("\nПроверка недостатка средств:")
 
     try:
-        investment_account.withdraw(
+        investment_account.sell_asset(
             AssetType.STOCKS,
             Decimal("1000000"),
         )
@@ -1140,8 +1147,8 @@ def run_simulation():
         bank.open_account(client_id=client_id, account=account)
 
     investment_account = accounts[-1][1]
-    investment_account.deposit(AssetType.STOCKS, Decimal("30000"))
-    investment_account.deposit(AssetType.BONDS, Decimal("20000"))
+    investment_account.buy_asset(AssetType.STOCKS, Decimal("30000"))
+    investment_account.buy_asset(AssetType.BONDS, Decimal("20000"))
 
     new_account = BankAccount(
         personal_info="Мария Смирнова",
@@ -1165,10 +1172,7 @@ def run_simulation():
 
     section("43. ГЕНЕРАЦИЯ ТРАНЗАКЦИЙ И ОЧЕРЕДЬ")
 
-    usable = [
-        account for _, account in accounts
-        if not isinstance(account, InvestmentAccount)
-    ]
+    usable = [account for _, account in accounts]
 
     transactions = []
 
@@ -1292,6 +1296,21 @@ def run_simulation():
 
     print(f"\nОсталось в очереди (отложенные): {len(queue)}")
 
+    print("\nОперации очереди с инвестиционным счётом:")
+    for transaction in processed:
+        if investment_account.account_id in (
+                transaction.sender,
+                transaction.receiver
+        ):
+            print(
+                f"  {transaction.transaction_id} "
+                f"{transaction.transaction_type.value:8} "
+                f"{transaction.amount:>10} {transaction.currency.value}: "
+                f"{describe_result(transaction)}"
+            )
+
+    print(investment_account)
+
     section("45. ПОЛЬЗОВАТЕЛЬСКИЕ СЦЕНАРИИ")
 
     client_id = "client-101"
@@ -1335,7 +1354,7 @@ def run_simulation():
             f"status={transaction.status.value}"
         )
 
-    section("46. БАНК: БЛОКИРОВКА ОПАСНЫХ ОПЕРАЦИЙ")
+    section("46. БАНК: РИСК-ПРОВЕРКА ПРЯМЫХ ОПЕРАЦИЙ")
 
     owner_id = "client-103"
     owner_password = "pass-103"
@@ -1369,6 +1388,13 @@ def run_simulation():
     except InvalidOperationError as error:
         print(f"Крупное пополнение нового счёта заблокировано банком: {error}")
 
+    # Фактор new_account относится только к переводам, поэтому
+    # пополнение получает максимум MEDIUM и банком не блокируется
+    last_risk = bank.history[-1].risk
+    print(
+        f"Риск операции: {last_risk['risk_level'].value} "
+        f"({', '.join(last_risk['reasons'])})"
+    )
     print(f"Баланс нового счёта: {fresh_account.balance}")
     print(f"Операций в истории банка: {len(bank.history)}")
 

@@ -586,7 +586,28 @@ class InvestmentAccount(AbstractAccount):
             for asset, amount in self.portfolio.items()
         }
 
-    def deposit(
+    def deposit(self, amount):
+        self._check_operation_allowed()
+
+        amount = self._validate_amount(amount)
+
+        self._account_balance += amount
+
+    def withdraw(self, amount):
+        self._check_operation_allowed()
+
+        amount = self._validate_amount(amount)
+
+        # В портфель вложенные деньги недоступны для снятия:
+        # сначала актив нужно продать через sell_asset()
+        if amount > self._account_balance:
+            raise InsufficientFundsError(
+                "Insufficient funds"
+            )
+
+        self._account_balance -= amount
+
+    def buy_asset(
             self,
             asset: AssetType,
             amount: Decimal
@@ -616,7 +637,7 @@ class InvestmentAccount(AbstractAccount):
         self._account_balance -= amount
         self.portfolio[asset] += amount
 
-    def withdraw(
+    def sell_asset(
             self,
             asset: AssetType,
             amount: Decimal
@@ -946,6 +967,9 @@ class Bank:
             password
         )
 
+        if account.account_status == Status.CLOSED:
+            raise AccountClosedError("Account is closed")
+
         account.account_status = Status.FROZEN
 
     def unfreeze_account(
@@ -961,6 +985,14 @@ class Bank:
             account_id,
             password
         )
+
+        if account.account_status == Status.CLOSED:
+            raise AccountClosedError("Account is closed")
+
+        if account.account_status != Status.FROZEN:
+            raise InvalidOperationError(
+                "Account is not frozen"
+            )
 
         account.account_status = Status.ACTIVE
 
@@ -1077,18 +1109,14 @@ class Bank:
 
         client = self._get_client(client_id)
 
-        account_is_new = not any(
-            past.status == TransactionStatus.COMPLETED
-            and account.account_id in (past.sender, past.receiver)
-            for past in self.history
-        )
-
+        # new_account относится только к переводам на новые счета,
+        # для пополнения и снятия этот фактор не применяется
         risk = assess_risk(
             self.risk_analyzer,
             transaction,
             self.history,
             set(client.accounts) | {account.account_id},
-            account_is_new
+            False
         )
 
         transaction.risk = risk
@@ -1708,11 +1736,6 @@ class TransactionProcessor:
         if account is None:
             raise InvalidOperationError(
                 f"{role} account not found"
-            )
-
-        if isinstance(account, InvestmentAccount):
-            raise InvalidOperationError(
-                "Investment accounts do not support transactions"
             )
 
         return account
